@@ -1,0 +1,99 @@
+name: Cloud Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      ANDROID_API_LEVEL: "37"
+      ANDROID_NDK_VERSION: "28.0.13004108"
+      QNN_VERSION: "2.51.0.260929"
+      QNN_SHA256: "9b4ca798902f02a2543857f5de4d233830c044d19701b92fc66a12fdc292211f"
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 37
+          ndk-version: 28.0.13004108
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip cmake ninja-build
+
+      - name: Resolve Android paths
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          NDK_DIR="$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | head -n1)"
+          echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
+          echo "NDK: $NDK_DIR"
+          test -d "$NDK_DIR"
+
+      - name: Download QAIRT (QNN) SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qairt"
+          cd "$RUNNER_TEMP/qairt"
+          URL="https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/${QNN_VERSION}/v${QNN_VERSION}.zip"
+          wget -O qairt.zip "$URL"
+          echo "${QNN_SHA256}  qairt.zip" | sha256sum -c -
+          unzip -q qairt.zip -d extracted
+          QNN_ROOT="$RUNNER_TEMP/qairt/extracted/qairt/${QNN_VERSION}"
+          echo "QNN_SDK_ROOT=$QNN_ROOT" >> $GITHUB_ENV
+          test -d "$QNN_ROOT/examples/QNN/SampleApp/SampleApp"
+          echo "QNN SDK ready: $QNN_ROOT"
+
+      - name: Build native library
+        working-directory: app/src/main/cpp
+        run: |
+          set -euo pipefail
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Generate release keystore
+        working-directory: app
+        run: |
+          keytool -genkeypair -v \
+            -keystore keystore.jks \
+            -alias localdream \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass cloudbuild -keypass cloudbuild \
+            -dname "CN=LocalDream,O=CloudBuild,C=US"
+
+      - name: Build APKs
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleBasicRelease assembleFilterRelease --no-daemon \
+            -PRELEASE_STORE_FILE=keystore.jks \
+            -PRELEASE_STORE_PASSWORD=cloudbuild \
+            -PRELEASE_KEY_ALIAS=localdream \
+            -PRELEASE_KEY_PASSWORD=cloudbuild
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-dream-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
