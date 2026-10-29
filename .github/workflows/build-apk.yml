@@ -30,22 +30,25 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK and NDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 37
-          ndk-version: 28.0.13004108
-
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unzip cmake ninja-build
 
-      - name: Resolve Android paths
+      - name: Install Android platform, build-tools and NDK
         run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
-          NDK_DIR="$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | head -n1)"
+          SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" "platforms;android-37" "build-tools;35.0.0" "ndk;28.0.13004108"
+
+      - name: Resolve Android paths
+        run: |
+          set -euo pipefail
+          NDK_DIR="$ANDROID_HOME/ndk/28.0.13004108"
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
           echo "NDK: $NDK_DIR"
           test -d "$NDK_DIR"
