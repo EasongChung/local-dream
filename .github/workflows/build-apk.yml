@@ -72,6 +72,12 @@ jobs:
           test -d "$QNN_ROOT/examples/QNN/SampleApp/SampleApp"
           echo "QNN SDK ready: $QNN_ROOT"
 
+      - name: Install Rust Android target
+        run: |
+          rustup target add aarch64-linux-android
+          rustup target list --installed
+          cargo --version
+
       - name: Build native library
         working-directory: app/src/main/cpp
         run: |
