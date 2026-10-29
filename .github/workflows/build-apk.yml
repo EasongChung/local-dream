@@ -43,7 +43,9 @@ jobs:
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" "platforms;android-37" "build-tools;35.0.0" "ndk;28.0.13004108"
+          "$SDKMGR" --channel=3 "platforms;android-37"
+          "$SDKMGR" "build-tools;35.0.0"
+          "$SDKMGR" "ndk;28.0.13004108"
 
       - name: Resolve Android paths
         run: |
