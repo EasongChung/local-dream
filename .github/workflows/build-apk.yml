@@ -54,6 +54,9 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_DIR" >> $GITHUB_ENV
           echo "NDK: $NDK_DIR"
           test -d "$NDK_DIR"
+          sudo mkdir -p /data
+          sudo ln -sfn "$NDK_DIR" /data/android-ndk-r28
+          which ninja || true
 
       - name: Download QAIRT (QNN) SDK
         run: |
