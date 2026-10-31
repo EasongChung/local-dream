@@ -15,8 +15,11 @@ jobs:
     env:
       ANDROID_API_LEVEL: "37"
       ANDROID_NDK_VERSION: "28.0.13004108"
+      ANDROID_NDK_DIT_VERSION: "29.0.14206865"
       QNN_VERSION: "2.51.0.260929"
       QNN_SHA256: "9b4ca798902f02a2543857f5de4d233830c044d19701b92fc66a12fdc292211f"
+      HEXAGON_SDK_VERSION: "6.7.0.0"
+      HEXAGON_SDK_SHA256: "00725fc449916d7b9af2c2a3c6b54d61f3c872d5dbc1d3ca3fd2f839b1d5dc70"
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -33,7 +36,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends unzip cmake ninja-build
+          sudo apt-get install -y --no-install-recommends unzip cmake ninja-build libgmp10
 
       - name: Install Android platform, build-tools and NDK
         run: |
@@ -43,7 +46,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
           SDKMGR="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
-          "$SDKMGR" "platforms;android-37.0" "build-tools;35.0.0" "ndk;28.0.13004108"
+          "$SDKMGR" "platforms;android-37.0" "build-tools;35.0.0" \
+            "ndk;28.0.13004108" "ndk;${ANDROID_NDK_DIT_VERSION}"
           # AGP resolves compileSdk = 37 to platforms/android-37; the SDK
           # package installs as android-37.0, so provide the expected alias.
           if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
@@ -92,6 +96,52 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
+      # The core build above does not produce the DiT engine: libdit_engine.so
+      # and its Hexagon skels are a separate project (app/src/main/cpp/dit) that
+      # needs the Hexagon SDK. Without them, every DiT model (Z-Image, Klein,
+      # Qwen Image 2.1, Krea 2) fails at DitEngine.isInstalled() on SM8750+.
+      - name: Free QNN SDK after native build
+        run: rm -rf "$RUNNER_TEMP/qairt"
+
+      - name: Download Hexagon SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hexagon"
+          cd "$RUNNER_TEMP/hexagon"
+          ARCHIVE="hexagon-sdk-v${HEXAGON_SDK_VERSION}-amd64-lnx.tar.xz"
+          URL="https://github.com/snapdragon-toolchain/hexagon-sdk/releases/download/v${HEXAGON_SDK_VERSION}/${ARCHIVE}"
+          wget -q -O "$ARCHIVE" "$URL"
+          echo "${HEXAGON_SDK_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar -xJf "$ARCHIVE"
+          rm -f "$ARCHIVE"
+          SDK_ROOT="$RUNNER_TEMP/hexagon/${HEXAGON_SDK_VERSION}"
+          test -f "$SDK_ROOT/hexagon_sdk.json"
+          echo "HEXAGON_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "Hexagon SDK ready: $SDK_ROOT"
+
+      - name: Build DiT engine
+        working-directory: app/src/main/cpp
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/${ANDROID_NDK_DIT_VERSION}"
+          test -d "$ANDROID_NDK_ROOT"
+          test -d "$HEXAGON_SDK_ROOT"
+          chmod +x dit/build.sh
+          bash dit/build.sh
+          test -f ../jniLibs/arm64-v8a/libdit_engine.so
+          test -f ../assets/ditlibs/libggml-htp-v79.so
+          test -f ../assets/ditlibs/libggml-htp-v81.so
+          test -f ../assets/ditlibs/libggml-htp-v85.so
+          ls -lh ../jniLibs/arm64-v8a ../assets/ditlibs
+
+      # Reclaim the SDK/NDK/build trees before Gradle; the APK only needs the
+      # staged .so files under jniLibs and assets.
+      - name: Clean heavy build inputs
+        run: |
+          rm -rf "$RUNNER_TEMP/hexagon"
+          rm -rf "$ANDROID_HOME/ndk/${ANDROID_NDK_DIT_VERSION}"
+          rm -rf app/src/main/cpp/build app/src/main/cpp/dit/build
+
       - name: Generate release keystore
         working-directory: app
         run: |
@@ -111,6 +161,33 @@ jobs:
             -PRELEASE_STORE_PASSWORD=cloudbuild \
             -PRELEASE_KEY_ALIAS=localdream \
             -PRELEASE_KEY_PASSWORD=cloudbuild
+
+      - name: Verify APK contains DiT engine
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          required = {
+              "lib/arm64-v8a/libstable_diffusion_core.so",
+              "lib/arm64-v8a/libdit_engine.so",
+              "assets/ditlibs/libggml-htp-v79.so",
+              "assets/ditlibs/libggml-htp-v81.so",
+              "assets/ditlibs/libggml-htp-v85.so",
+          }
+          apks = glob.glob("app/build/outputs/apk/**/*.apk", recursive=True)
+          if not apks:
+              sys.exit("no APK found")
+          for path in apks:
+              with zipfile.ZipFile(path) as z:
+                  names = set(z.namelist())
+              missing = required - names
+              if missing:
+                  sys.exit(f"{path}: missing {sorted(missing)}")
+              print(f"{path}: OK ({len(names)} entries)")
+          PY
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
